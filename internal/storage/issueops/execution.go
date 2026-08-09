@@ -11,13 +11,35 @@ import (
 	publicops "github.com/steveyegge/beads/issueops"
 )
 
+// HistoryEntry names the version-control entry a guarded mutation records: the
+// caller's own provenance label when it supplied one, otherwise the
+// implementation's default. It decides how the entry READS, never whether one
+// is recorded — that stays a question about what the mutation wrote.
+//
+// Every guarded mutation whose request carries a label calls this. Create is
+// the one that does not, and the reason is NOT that no surface names the
+// created issue — several do (internal/storage/dolt/issues.go writes
+// "bd: create <id>", reached from cmd/bd/create_atomic.go). It is that
+// CreateRequest has no Provenance field for a caller to set, so there is no
+// label for this function to prefer. That is a gap rather than a principle:
+// the proxied route's create message changed from "bd: create <id>" to
+// "create issue" for exactly this reason, and closing it means either giving
+// CreateRequest the field or having the role compose an id-bearing default the
+// way BatchCloser and ClaimNext do. Tracked as its own decision.
+func HistoryEntry(provenance, fallback string) string {
+	if provenance != "" {
+		return provenance
+	}
+	return fallback
+}
+
 // ExecuteCreate applies a guarded create in tx and reports durable tables changed.
 func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequest) (publicops.CreateResult, ChangedTables, error) {
 	attempt := CloneCreateRequest(request)
 	if err := ValidatePublicCreateRequest(attempt); err != nil {
 		return publicops.CreateResult{}, nil, err
 	}
-	batch, err := NewBatchContext(ctx, tx, storage.BatchCreateOptions{CreateOnly: true, OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: attempt.ForceIDPrefix})
+	batch, err := NewBatchContext(ctx, tx, storage.BatchCreateOptions{CreateOnly: true, SkipPrefixValidation: attempt.ForceIDPrefix})
 	if err != nil {
 		return publicops.CreateResult{}, nil, err
 	}
@@ -59,7 +81,7 @@ func ExecuteCreate(ctx context.Context, tx *sql.Tx, request publicops.CreateRequ
 	issue.Dependencies = storage.CreatePublicCreateDependencies(issue.ID, attempt)
 	var skipped []skippedDependency
 	created, err := CreateIssuesInTxWithResult(ctx, tx, []*types.Issue{issue}, attempt.Actor, storage.BatchCreateOptions{
-		CreateOnly: true, OrphanHandling: storage.OrphanAllow, SkipPrefixValidation: attempt.ForceIDPrefix,
+		CreateOnly: true, SkipPrefixValidation: attempt.ForceIDPrefix,
 		OnSkippedDependency: func(issueID, dependsOnID, reason string) {
 			skipped = append(skipped, skippedDependency{issueID: issueID, dependsOnID: dependsOnID, reason: reason})
 		},
@@ -110,6 +132,12 @@ func ExecuteUpdate(ctx context.Context, tx *sql.Tx, request publicops.UpdateRequ
 	}
 	if err := ValidateMetadataPatch(attempt.Patch.Metadata); err != nil {
 		return publicops.UpdateResult{}, nil, err
+	}
+	// The plane restriction is resolved HERE, inside the update's own
+	// transaction, so a caller that serves durable issues only cannot be handed
+	// a wisp by a resolve that ran earlier.
+	if attempt.IssuePlaneOnly && IsActiveWispInTx(ctx, tx, attempt.IssueID) {
+		return publicops.UpdateResult{}, nil, fmt.Errorf("%w: issue %s", storage.ErrNotFound, attempt.IssueID)
 	}
 	tables := ChangedTables{}
 	before, err := GetIssueInTx(ctx, tx, attempt.IssueID)

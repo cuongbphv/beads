@@ -184,13 +184,38 @@ func LoadUOWListConfig(ctx context.Context, uw UnitOfWork) (ListConfig, error) {
 // exclusions, the pinned and template defaults, and the gate, infra-type, and
 // wisp suppression that make the default listing show durable work only.
 func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter, error) {
+	// The --ready arm reaches its query through ReadyFilterFromIssueFilter,
+	// which carries only part of what this filter can express. A request that
+	// asks --ready to honor something the projection drops is refused here,
+	// at the one point every frontend and every implementation of
+	// issueops.Reader passes through, rather than answered with the wider set.
+	// The drop set and the refusal text live beside the promise they enforce,
+	// in issueops.
+	if err := issueops.ValidateReadyFlagScope(in); err != nil {
+		return types.IssueFilter{}, err
+	}
+
 	filter := types.IssueFilter{
-		Limit:          SQLLimit(in),
+		Limit: SQLLimit(in),
+		// The offset is carried for the callers that consume this filter as a
+		// VALUE and run their own query — `bd list --watch` and the proxied
+		// hierarchical --parent walk — where the seam beneath them renders it.
+		// Both implementations of issueops.Reader take it back off
+		// (WithRowsBeforeThePage) and skip in the shared page epilogue instead;
+		// FinishPageAt says why the role cannot leave it here.
 		Offset:         in.Offset,
 		SortBy:         in.SortBy,
 		SortDesc:       in.Reverse,
 		AfterCreatedAt: in.AfterCreatedAt,
 		AfterID:        in.AfterID,
+		// The defensive cap travels ON the request, so this builder is the
+		// only writer of the filter's two cap fields. `bd list` used to stamp
+		// them onto the filter after the builder returned, which is the
+		// "build it, then reach in and change it" half-step the role exists to
+		// make unreachable — and it left the cap invisible to every
+		// implementation of Reader.List.
+		MaxRows:       in.MaxRows,
+		MaxRowsSource: in.MaxRowsSource,
 	}
 
 	if in.ReadyFlag {
@@ -295,6 +320,9 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 	if in.SkipLabels {
 		filter.SkipLabels = true
 	}
+	if in.SkipCounts {
+		filter.SkipCounts = true
+	}
 
 	if in.PriorityMin != nil {
 		p := *in.PriorityMin
@@ -378,7 +406,11 @@ func BuildListFilter(in issueops.ListRequest, cfg ListConfig) (types.IssueFilter
 		return filter, err
 	}
 
-	if !in.IncludeInfra && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
+	// The plane bit. Three requests admit the wisp table: an explicit
+	// IncludeEphemeral, IncludeInfra (which admits the plane AND drops the
+	// infra-type exclusions above), and naming an infra type (which routed to
+	// the plane alone a few lines up). Everything else is the durable listing.
+	if !in.IncludeEphemeral && !in.IncludeInfra && (in.IssueType == "" || !cfg.IsInfra(in.IssueType)) {
 		filter.SkipWisps = true
 	}
 
