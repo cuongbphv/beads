@@ -33,6 +33,7 @@ package gittraceenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -71,13 +72,16 @@ func Vars() []string {
 }
 
 // stderrDirected reports whether value is a form git directs at stderr (or an
-// inherited fd, or rejects with a stderr warning) rather than at a file.
+// inherited fd, or rejects with a stderr warning) rather than at a file, for
+// the trace variable name.
 //
 // Git's rule (trace.c): "" / "0" / "false" disable tracing; "1", "2".."9",
 // "true" write to that file descriptor (1 and true mean stderr); an absolute
 // path appends to that file; anything else draws "warning: unknown trace
-// value" on stderr. GIT_TRACE2 additionally accepts af_unix:[<mode>:]<path>.
-func stderrDirected(value string) bool {
+// value" on stderr. Only the GIT_TRACE2 family additionally accepts
+// af_unix:[<mode>:]<path> — for the classic GIT_TRACE vars that value is
+// "anything else", i.e. a per-plumbing-call stderr warning.
+func stderrDirected(name, value string) bool {
 	switch strings.ToLower(value) {
 	case "", "0", "false":
 		return false // disabled — harmless
@@ -85,10 +89,24 @@ func stderrDirected(value string) bool {
 	if filepath.IsAbs(value) {
 		return false // file target — never touches stderr
 	}
-	if strings.HasPrefix(value, "af_unix:") {
+	// Git's is_absolute_path on Windows accepts a leading dir separator
+	// (a Git-Bash-style /c/temp/git.trace), which filepath.IsAbs rejects.
+	if runtime.GOOS == "windows" && (value[0] == '/' || value[0] == '\\') {
+		return false // file target for git — never touches stderr
+	}
+	if strings.HasPrefix(value, "af_unix:") && strings.HasPrefix(name, "GIT_TRACE2") {
 		return false // trace2 socket target — never touches stderr
 	}
 	return true
+}
+
+// envNameEquals compares environment variable names: exact on POSIX,
+// case-insensitive on Windows to match Win32 (and git's) env lookup.
+func envNameEquals(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // Process-environment state for WithScrubbed. A refcount rather than a plain
@@ -118,7 +136,7 @@ func acquire() {
 	}
 	saved = map[string]string{}
 	for _, name := range pathCapableVars {
-		if v, ok := os.LookupEnv(name); ok && stderrDirected(v) {
+		if v, ok := os.LookupEnv(name); ok && stderrDirected(name, v) {
 			saved[name] = v
 			// Best effort, matching githooksenv: an unscrubbed push that
 			// may still succeed beats no push at all.
@@ -165,13 +183,13 @@ func ScrubEnv(env []string) []string {
 
 func shouldScrub(name, value string) bool {
 	for _, n := range alwaysStderrVars {
-		if name == n {
+		if envNameEquals(name, n) {
 			return true
 		}
 	}
 	for _, n := range pathCapableVars {
-		if name == n {
-			return stderrDirected(value)
+		if envNameEquals(name, n) {
+			return stderrDirected(n, value)
 		}
 	}
 	return false

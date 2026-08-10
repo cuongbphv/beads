@@ -15,35 +15,41 @@ func TestStderrDirected(t *testing.T) {
 		absPath = `C:\temp\git.trace`
 	}
 	tests := []struct {
+		name  string
 		value string
 		want  bool
 	}{
 		// Disabled forms: harmless, keep.
-		{"", false},
-		{"0", false},
-		{"false", false},
-		{"FALSE", false},
+		{"GIT_TRACE", "", false},
+		{"GIT_TRACE", "0", false},
+		{"GIT_TRACE", "false", false},
+		{"GIT_TRACE", "FALSE", false},
 		// Stderr forms: scrub.
-		{"1", true},
-		{"true", true},
-		{"TRUE", true},
-		{"yes", true},
-		{"on", true},
+		{"GIT_TRACE", "1", true},
+		{"GIT_TRACE", "true", true},
+		{"GIT_TRACE", "TRUE", true},
+		{"GIT_TRACE", "yes", true},
+		{"GIT_TRACE", "on", true},
 		// Inherited-fd forms: scrub (fd 2 is stderr; the rest are not ours).
-		{"2", true},
-		{"9", true},
+		{"GIT_TRACE", "2", true},
+		{"GIT_TRACE", "9", true},
 		// File targets: never touch stderr, keep. This is the supported way
 		// to trace bd's git remote plumbing.
-		{absPath, false},
-		// Trace2 socket target: keep.
-		{"af_unix:/tmp/trace.sock", false},
+		{"GIT_TRACE", absPath, false},
+		// Socket target: only the GIT_TRACE2 family supports af_unix; on
+		// classic GIT_TRACE it is an unknown value that draws a warning ON
+		// STDERR per plumbing call, so it is scrubbed there.
+		{"GIT_TRACE2", "af_unix:/tmp/trace.sock", false},
+		{"GIT_TRACE2_EVENT", "af_unix:stream:/tmp/trace.sock", false},
+		{"GIT_TRACE", "af_unix:/tmp/trace.sock", true},
+		{"GIT_TRACE_PACKET", "af_unix:/tmp/trace.sock", true},
 		// Relative path: git rejects it with a warning ON STDERR, scrub.
-		{"trace.log", true},
-		{"./trace.log", true},
+		{"GIT_TRACE", "trace.log", true},
+		{"GIT_TRACE", "./trace.log", true},
 	}
 	for _, tt := range tests {
-		if got := stderrDirected(tt.value); got != tt.want {
-			t.Errorf("stderrDirected(%q) = %v, want %v", tt.value, got, tt.want)
+		if got := stderrDirected(tt.name, tt.value); got != tt.want {
+			t.Errorf("stderrDirected(%q, %q) = %v, want %v", tt.name, tt.value, got, tt.want)
 		}
 	}
 }
@@ -142,6 +148,8 @@ func TestScrubEnv(t *testing.T) {
 		"GIT_TRACE=" + absPath, // later duplicate with a file target: kept
 		"GIT_CURL_VERBOSE=0",   // presence alone enables it: dropped
 		"GIT_TRACE2=" + absPath,
+		"GIT_TRACE2=af_unix:/tmp/trace.sock", // trace2 socket target: kept
+		"GIT_TRACE=af_unix:/tmp/trace.sock",  // unknown value for classic GIT_TRACE: dropped
 		"GIT_TRACE_PACKET=true",
 		"NOT_GIT_TRACE=1",
 	}
@@ -150,10 +158,39 @@ func TestScrubEnv(t *testing.T) {
 		"PATH=/usr/bin",
 		"GIT_TRACE=" + absPath,
 		"GIT_TRACE2=" + absPath,
+		"GIT_TRACE2=af_unix:/tmp/trace.sock",
 		"NOT_GIT_TRACE=1",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("ScrubEnv() = %q, want %q", got, want)
+	}
+}
+
+// Windows resolves environment names case-insensitively (both git's getenv
+// and Go's os.LookupEnv), so ScrubEnv must match names the same way there —
+// `set Git_Trace=1` enables tracing in the child just like GIT_TRACE=1.
+func TestScrubEnvWindowsCaseInsensitiveNames(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows env-name semantics")
+	}
+	got := ScrubEnv([]string{"Git_Trace=1", "git_curl_verbose=1", "PATH=C:\\bin"})
+	want := []string{"PATH=C:\\bin"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ScrubEnv() = %q, want %q", got, want)
+	}
+}
+
+// Git on Windows treats a leading dir separator as absolute (is_dir_sep), so
+// a Git-Bash-style file target like /c/temp/git.trace never touches stderr
+// and must be kept, even though filepath.IsAbs rejects it.
+func TestStderrDirectedWindowsLeadingSlashIsFileTarget(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows path semantics")
+	}
+	for _, v := range []string{"/c/temp/git.trace", `\temp\git.trace`} {
+		if stderrDirected("GIT_TRACE", v) {
+			t.Errorf("stderrDirected(GIT_TRACE, %q) = true, want false (git treats it as a file target)", v)
+		}
 	}
 }
 
