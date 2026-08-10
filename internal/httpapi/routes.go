@@ -116,6 +116,17 @@ type route struct {
 	// used to prevent, so the slot moves to the individual reads.
 	// TestStreamingRowsAreTheDocumentsStreamingOps pins the pair.
 	streaming bool
+	// authExempt serves an operation with no bearer credential on a server
+	// that was configured with one. Only legitimate for liveness: the probe
+	// must answer with no credential, and it discloses nothing but that the
+	// process is up. Identity is NOT exempt — GET /v0/beads/context reveals the
+	// repo root, the beads directory and the database name.
+	//
+	// It is a column rather than a middleware rule for the same reason
+	// bypassSemaphore is: the exemption is a property of the operation, so it
+	// belongs where TestSpecSecurityMatchesRouteTable can compare it against
+	// the document's per-operation `security` declarations.
+	authExempt bool
 	// implemented gates the capability list, so a release between slices never
 	// advertises an operation that does not work. Every v0 operation is
 	// implemented as of the read-endpoints slice; the flag stays because the
@@ -139,8 +150,11 @@ var routeTable = []route{
 		// fail, so it must not queue behind the database. That is exactly
 		// what makes it liveness-only: it stays green while Dolt is wedged.
 		bypassSemaphore: true,
-		implemented:     true,
-		handler:         (*Server).handleHealth,
+		// The one auth-exempt row. A kubelet probe presents no credential, and
+		// a liveness endpoint that 401s is a pod that restarts forever.
+		authExempt:  true,
+		implemented: true,
+		handler:     (*Server).handleHealth,
 	},
 	{
 		op:      OpGetContext,
@@ -208,6 +222,22 @@ var routeTable = []route{
 		capability:  "issues.query",
 		implemented: true,
 		handler:     (*Server).handleQueryIssues,
+	},
+	{
+		op:     OpCountIssues,
+		method: http.MethodGet,
+		// A collection-level custom method on the issue collection, spelled the
+		// way ready:count's is: both segments are LITERAL, so pattern and
+		// specPath agree and the router registers the documented path itself.
+		//
+		// It cannot collide with the claim's wide POST wildcard — that one is
+		// registered under POST and requires the separating slash this path has
+		// none of — nor with the plain collection GET, which ServeMux matches
+		// whole.
+		pattern:     "/v0/beads/issues:count",
+		capability:  "issues.count",
+		implemented: true,
+		handler:     (*Server).handleCountIssues,
 	},
 	{
 		op:          OpGetIssue,
@@ -353,6 +383,14 @@ var routeTable = []route{
 		// segment that ends in no registered suffix, so the wide pattern stays a
 		// routing detail rather than undocumented surface.
 		// TestCustomMethodsNarrowThePOSTSurface pins it.
+		//
+		// That 404 needs no credential, because the split happens before
+		// s.route: an unrouted suffix here is answered exactly as the catch-all
+		// answers any other unrouted path, while a registered one reaches its
+		// row and is refused. Paths are public spec, so the miss discloses
+		// nothing the document does not already publish;
+		// TestUnroutedPathsStayUnauthenticated pins both halves so neither gets
+		// "fixed" into the other.
 		specPath:     "/v0/beads/issues/{id}:claim",
 		customMethod: ":claim",
 		capability:   "issues.claim",
@@ -408,6 +446,33 @@ var routeTable = []route{
 		capability:   "issues.reopen",
 		implemented:  true,
 		handler:      (*Server).handleReopen,
+	},
+	{
+		op:     OpBatchCloseIssues,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way issues:batchCreate
+		// is — and this operation is that one's deliberate opposite: it is not
+		// all-or-nothing, so its 200 carries per-item refusals.
+		pattern:     "/v0/beads/issues:batchClose",
+		capability:  "issues.batchClose",
+		implemented: true,
+		handler:     (*Server).handleBatchClose,
+	},
+	{
+		op:     OpClaimNextIssue,
+		method: http.MethodPost,
+		// A collection-level custom method, spelled the way issues:sweep is,
+		// and preferred over the claim's wildcard for that row's reason: the
+		// segment is a LITERAL, so the router registers the documented path
+		// itself and ServeMux prefers it over the wildcard for this exact path.
+		//
+		// It names no id BECAUSE IT NAMES NO ROW. The caller asks a question and
+		// the role picks the answer, which is what makes this a sibling of
+		// issues/{id}:claim rather than a mode of it.
+		pattern:     "/v0/beads/issues:claimNext",
+		capability:  "issues.claimNext",
+		implemented: true,
+		handler:     (*Server).handleClaimNext,
 	},
 	{
 		op:     OpSweepIssues,
