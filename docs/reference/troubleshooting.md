@@ -751,6 +751,59 @@ protection → Ransomware protection → Controlled folder access → "Allow an
 app through Controlled folder access" → browse to `bd.exe` (typically
 `%USERPROFILE%\go\bin\bd.exe`). Then retry `bd init`.
 
+### Windows: `ENOENT` when a Node program spawns `bd`
+
+**Symptom:** An editor extension, MCP server, or script that shells out to
+`bd` fails on Windows with `spawn bd ENOENT`, even though `bd` runs fine in
+the same terminal.
+
+The npm package installs `bd` as a generated `bd.cmd` shim, not as an
+executable named `bd`. Node's `execFile()` and `spawn()` run their target
+directly instead of through a shell, so they never apply the `PATHEXT`
+resolution that finds `bd.cmd` — and a batch file is not directly executable
+in the first place.
+
+**Solution:** Name the shim explicitly and give it a shell:
+
+```js
+const { execFile } = require('node:child_process');
+
+const isWindows = process.platform === 'win32';
+
+execFile(
+  isWindows ? 'bd.cmd' : 'bd',
+  ['ready', '--json'],
+  { shell: isWindows },
+  (err, stdout) => { /* ... */ },
+);
+```
+
+To avoid a shell — and the argument quoting that comes with it — spawn the
+native binary the shim wraps, at `node_modules/@beads/bd/bin/bd.exe`.
+
+### Windows: `/tmp` paths from Git Bash
+
+**Symptom:** A `bd` command that writes to `/tmp` from Git Bash reports
+success, but the file is not there afterwards.
+
+`bd.exe` is a native Windows binary and does not share Git Bash's emulated
+POSIX filesystem. Git Bash resolves `/tmp` to its own temp directory, while a
+native program resolves it against the current drive root — `C:\tmp`. One
+path string, two directories, no error from either side.
+
+```bash
+bd export -o /tmp/issues.jsonl   # bd writes C:\tmp\issues.jsonl
+ls /tmp/issues.jsonl             # No such file or directory
+```
+
+**Solution:** Hand `bd` a Windows path:
+
+```bash
+bd export -o "$(cygpath -w /tmp)\issues.jsonl"
+```
+
+The same applies to any path argument, including `--db` and config values.
+
 ### macOS: Gatekeeper blocking execution
 
 1. Verify the downloaded binary checksum matches the release `checksums.txt`.
