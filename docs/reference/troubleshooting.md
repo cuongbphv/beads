@@ -781,28 +781,34 @@ execFile(
 To avoid a shell — and the argument quoting that comes with it — spawn the
 native binary the shim wraps, at `node_modules/@beads/bd/bin/bd.exe`.
 
-### Windows: `/tmp` paths from Git Bash
+### Windows: `/tmp` paths silently land in the drive root
 
-**Symptom:** A `bd` command that writes to `/tmp` from Git Bash reports
-success, but the file is not there afterwards.
+**Symptom:** A `bd` command given a `/tmp/...` path reports success, but
+the file is not where you look for it — it was written to `C:\tmp\...`.
 
 `bd.exe` is a native Windows binary and does not share Git Bash's emulated
-POSIX filesystem. Git Bash resolves `/tmp` to its own temp directory, while a
-native program resolves it against the current drive root — `C:\tmp`. One
-path string, two directories, no error from either side.
+POSIX filesystem. When a literal `/tmp/...` string reaches `bd`, it resolves
+against the current drive root.
 
-```bash
-bd export -o /tmp/issues.jsonl   # bd writes C:\tmp\issues.jsonl
-ls /tmp/issues.jsonl             # No such file or directory
+In a default interactive Git Bash this usually does *not* happen — Git for
+Windows converts standalone POSIX-path arguments to Windows paths before
+`bd.exe` sees them. The trap appears when that conversion is out of play:
+
+- `MSYS_NO_PATHCONV=1` or `MSYS2_ARG_CONV_EXCL` is set (common in
+  Docker-heavy environments)
+- the path comes from a config value or a file, not a command-line argument
+- `bd` is spawned by a non-MSYS parent — a Node script, editor extension,
+  or MCP server — which passes the string through verbatim:
+
+```js
+// From Node on Windows: no path conversion happens
+execFile('bd.cmd', ['export', '-o', '/tmp/issues.jsonl'], { shell: true }, ...);
+// bd writes C:\tmp\issues.jsonl — and exits 0
 ```
 
-**Solution:** Hand `bd` a Windows path:
-
-```bash
-bd export -o "$(cygpath -w /tmp)\issues.jsonl"
-```
-
-The same applies to any path argument, including `--db` and config values.
+**Solution:** Hand `bd` a Windows path — `os.tmpdir()` from Node,
+`"$(cygpath -w /tmp)\issues.jsonl"` from Git Bash scripts. This applies to
+any path argument, including `--db` and config values.
 
 ### macOS: Gatekeeper blocking execution
 
