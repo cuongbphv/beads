@@ -78,7 +78,6 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 
 	check, _ := cmd.Flags().GetBool("check")
 	fix, _ := cmd.Flags().GetBool("fix")
-	jsonOutput, _ := cmd.Flags().GetBool("json")
 	skipLint, _ := cmd.Flags().GetBool("skip-lint")
 
 	if fix {

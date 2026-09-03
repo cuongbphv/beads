@@ -347,7 +347,7 @@ func TestCompactInitCommand(t *testing.T) {
 
 	// --json is inherited from rootCmd as a persistent flag; a local copy
 	// would shadow it (see TestNoSubcommandShadowsRootJSONFlag).
-	if compactCmd.InheritedFlags().Lookup("json") == nil {
-		t.Error("compact command should inherit --json flag from rootCmd")
+	if f := compactCmd.Flags().Lookup("json"); f != nil && f != rootCmd.PersistentFlags().Lookup("json") {
+		t.Error("compact command must not register a local --json; it inherits the root flag")
 	}
 }
