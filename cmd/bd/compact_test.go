@@ -345,9 +345,9 @@ func TestCompactInitCommand(t *testing.T) {
 		t.Error("compactCmd should have Long description")
 	}
 
-	// Verify --json flag exists
-	jsonFlag := compactCmd.Flags().Lookup("json")
-	if jsonFlag == nil {
-		t.Error("compact command should have --json flag")
+	// --json is inherited from rootCmd as a persistent flag; a local copy
+	// would shadow it (see TestNoSubcommandShadowsRootJSONFlag).
+	if compactCmd.InheritedFlags().Lookup("json") == nil {
+		t.Error("compact command should inherit --json flag from rootCmd")
 	}
 }

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bd restore --json`, `bd admin compact --json`, `bd repo <add|remove|list|sync>
+  --json` and `bd migrate [sync|hooks|schema] --json` honor the flag again.**
+  Each of those commands registered its own local `--json` bound to the same
+  variable as the root persistent flag. pflag keeps the local flag and drops
+  the inherited one, so the root flag never read as "changed" and the pre-run
+  reset the output mode from config — the commands printed text unless
+  `json: true` was configured. The local registrations are gone (`bd preflight`
+  drops its unbound local copy too, so it now follows the configured default
+  like every other command), `--json` moves to the Global Flags section of
+  those commands' `--help`, and a guard test fails the build if a command
+  shadows the root flag again.
+
 - **`bd doctor` no longer flags a `.local_version` that starts with `v`.** The
   canonical spelling of a Go module version — and the string a build stamped
   from a Go pseudo-version reports and writes into `.local_version` itself —
