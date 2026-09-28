@@ -9,17 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`bd restore --json`, `bd admin compact --json`, `bd repo <add|remove|list|sync>
-  --json` and `bd migrate [sync|hooks|schema] --json` honor the flag again.**
-  Each of those commands registered its own local `--json` bound to the same
-  variable as the root persistent flag. pflag keeps the local flag and drops
-  the inherited one, so the root flag never read as "changed" and the pre-run
-  reset the output mode from config — the commands printed text unless
-  `json: true` was configured. The local registrations are gone (`bd preflight`
-  drops its unbound local copy too, so it now follows the configured default
-  like every other command), `--json` moves to the Global Flags section of
-  those commands' `--help`, and a guard test fails the build if a command
-  shadows the root flag again.
+- **`bd restore`, `bd admin compact`, `bd repo <add|remove|list|sync>`,
+  `bd migrate [sync|hooks|schema]` and `bd preflight` no longer register a
+  local `--json` that shadows the root persistent flag.** pflag keeps a
+  command's own flag and drops the inherited one, so
+  `rootCmd.PersistentFlags().Changed("json")` stays false for that command;
+  [#6293](https://github.com/gastownhall/beads/pull/6293) compensated for that
+  per command by making the pre-run consult the subcommand's own `Changed` bit
+  before the root's. Deleting the eleven local registrations removes the
+  shadowing itself rather than working around it: `--json` moves to the Global
+  Flags section of those commands' `--help`, and a guard test now fails the
+  build if a command shadows the root flag again — closing the class before an
+  *unbound* local copy can reappear and invert the output mode it was meant to
+  select.
 
 - **`bd doctor` no longer flags a `.local_version` that starts with `v`.** The
   canonical spelling of a Go module version — and the string a build stamped
@@ -689,12 +691,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdout is unlimited, agent mode on a terminal gets 20, and a terminal gets 50.
 
 - **`bd preflight` honors the `json` config default**
-  ([#6293](https://github.com/gastownhall/beads/pull/6293)). Its `--json` flag
-  is bound to the same global every sibling command binds, so `json: true` in
-  the config file now selects JSON output for `bd preflight` as it already did
-  elsewhere. Previously only the explicit flag was honored — and, because an
-  unbound flag reports as unset, `bd preflight --json` did not reach every
-  JSON-aware renderer.
+  ([#6293](https://github.com/gastownhall/beads/pull/6293)). `json: true` in the
+  config file selects JSON output for `bd preflight`, as it already did
+  elsewhere; previously only the explicit flag was honored.
 - **`bd gate check` resolves bead gates whose target lives in a prefix-routed
   rig** ([#5859](https://github.com/gastownhall/beads/pull/5859)). After a local
   miss, the evaluator follows the target bead ID through `routes.jsonl` and
